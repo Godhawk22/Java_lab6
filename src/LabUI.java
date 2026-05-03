@@ -1,7 +1,9 @@
 
 
 import java.io.*;
-import java.util.LinkedList;
+import java.net.*;
+import java.util.*;
+import java.util.concurrent.*;
 /*
  * Click nbfs://nbhost/SystemFileSystem/Templates/Licenses/license-default.txt to change this license
  * Click nbfs://nbhost/SystemFileSystem/Templates/GUIForms/JFrame.java to edit this template
@@ -274,22 +276,59 @@ public class LabUI extends javax.swing.JFrame {
         return tasks;
     }
 
-    private double calculateInParallel(RecIntegral base) throws InterruptedException {
-        java.util.LinkedList<RecIntegral> tasks = createSubTasks(base);
+    private Map<Integer, Double> calculateDistributed(List<Integer> rows) throws IOException {
+        String portInput = javax.swing.JOptionPane.showInputDialog(this, "TCP port", "5050");
+        if (portInput == null) return java.util.Collections.emptyMap();
+        int port = Integer.parseInt(portInput.trim());
 
-        for (RecIntegral task : tasks) {
-            task.start();
-        }
+        Map<Integer, Double> resultMap = new ConcurrentHashMap<>();
+        try (ServerSocket serverSocket = new ServerSocket(port)) {
+            serverSocket.setSoTimeout(10000);
 
-        double total = 0.0;
-        for (RecIntegral task : tasks) {
-            task.join();
-            if (task.getResult() != null) {
-                total += task.getResult();
+            List<Socket> clients = new ArrayList<>();
+            javax.swing.JOptionPane.showMessageDialog(this, "Запустите клиентские узлы и подключите их в течение 10 секунд");
+            long end = System.currentTimeMillis() + 10000;
+            while (System.currentTimeMillis() < end) {
+                try { clients.add(serverSocket.accept()); } catch (SocketTimeoutException ex) { break; }
+            }
+
+            if (clients.isEmpty()) throw new IOException("Нет подключенных клиентов");
+
+            List<Thread> workers = new ArrayList<>();
+            for (int c = 0; c < clients.size(); c++) {
+                final int clientIndex = c;
+                Thread t = new Thread(() -> {
+                    try (Socket socket = clients.get(clientIndex);
+                         BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                         PrintWriter out = new PrintWriter(new OutputStreamWriter(socket.getOutputStream()), true)) {
+                        in.readLine();
+                        for (int i = clientIndex; i < rows.size(); i += clients.size()) {
+                            int row = rows.get(i);
+                            out.println(DistributedProtocol.taskLine(row, records.get(row)));
+                        }
+                        out.println("END");
+
+                        String line;
+                        while ((line = in.readLine()) != null) {
+                            if (line.equals("DONE")) break;
+                            if (line.startsWith("RESULT ")) {
+                                String[] parts = line.split("\s+");
+                                resultMap.put(Integer.parseInt(parts[1]), Double.parseDouble(parts[2]));
+                            }
+                        }
+                    } catch (IOException ex) {
+                        throw new RuntimeException(ex);
+                    }
+                });
+                workers.add(t);
+                t.start();
+            }
+
+            for (Thread t : workers) {
+                try { t.join(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
             }
         }
-
-        return total;
+        return resultMap;
     }
     private void jButton1ActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_jButton1ActionPerformed
         // TODO add your handling code here:    
@@ -331,13 +370,15 @@ public class LabUI extends javax.swing.JFrame {
         new javax.swing.SwingWorker<Void, Void>() {
             @Override
             protected Void doInBackground() {
-                for (int row : selectedModelRows) {
-                    try {
-                        records.get(row).setResult(calculateInParallel(records.get(row)));
-                    } catch (InterruptedException ex) {
-                        Thread.currentThread().interrupt();
-                        break;
+                java.util.List<Integer> rows = new java.util.ArrayList<>();
+                for (int row : selectedModelRows) rows.add(row);
+                try {
+                    java.util.Map<Integer, Double> results = calculateDistributed(rows);
+                    for (java.util.Map.Entry<Integer, Double> e : results.entrySet()) {
+                        records.get(e.getKey()).setResult(e.getValue());
                     }
+                } catch (Exception ex) {
+                    javax.swing.SwingUtilities.invokeLater(() -> javax.swing.JOptionPane.showMessageDialog(LabUI.this, ex.getMessage()));
                 }
                 return null;
             }
@@ -443,62 +484,11 @@ public class LabUI extends javax.swing.JFrame {
     }//GEN-LAST:event_jMenuItem2ActionPerformed
 
     private void jMenuItem3ActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_jMenuItem3ActionPerformed
-        // TODO add your handling code here:
-        javax.swing.JFileChooser chooser = new javax.swing.JFileChooser();
-        chooser.setDialogTitle("Сохранить в бинарный файл");
-        chooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter("Data files", "dat"));
-
-        if (chooser.showSaveDialog(this) == javax.swing.JFileChooser.APPROVE_OPTION) {
-            java.io.File file = chooser.getSelectedFile();
-
-            if (!file.getName().endsWith(".dat")) {
-                file = new java.io.File(file.getAbsolutePath() + ".dat");
-            }
-
-            try {
-                FileWriter.saveBinary(file, records);
-                javax.swing.JOptionPane.showMessageDialog(this, "Файл сохранён");
-            } catch (IOException ex) {
-                javax.swing.JOptionPane.showMessageDialog(this, ex.getMessage());
-            }
-        }
+        javax.swing.JOptionPane.showMessageDialog(this, "Бинарные файлы отключены. Используйте TCP-клиенты и текстовые файлы.");
     }//GEN-LAST:event_jMenuItem3ActionPerformed
 
     private void jMenuItem4ActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_jMenuItem4ActionPerformed
-        // TODO add your handling code here:
-        javax.swing.JFileChooser chooser = new javax.swing.JFileChooser();
-        chooser.setDialogTitle("Загрузить из бинарного файла");
-        chooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter("Data files", "dat"));
-
-        if (chooser.showOpenDialog(this) == javax.swing.JFileChooser.APPROVE_OPTION) {
-            java.io.File file = chooser.getSelectedFile();
-
-            try {
-                LinkedList<RecIntegral> loaded = FileReader.loadBinary(file);
-
-                records.clear();
-                records.addAll(loaded);
-
-                model.setRowCount(0);
-
-                for (RecIntegral rec : records) {
-                    model.addRow(new Object[]{
-                        rec.getFrom(),
-                        rec.getTo(),
-                        rec.getStep(),
-                        rec.getResult()
-                    });
-                }
-                javax.swing.JOptionPane.showMessageDialog(
-                    this,
-                    "Файл успешно загружен",
-                    "Загрузка",
-                    javax.swing.JOptionPane.INFORMATION_MESSAGE
-                );
-            } catch (IOException | ClassNotFoundException ex) {
-                javax.swing.JOptionPane.showMessageDialog(this, ex.getMessage());
-            }
-        }
+        javax.swing.JOptionPane.showMessageDialog(this, "Бинарные файлы отключены. Используйте TCP-клиенты и текстовые файлы.");
     }//GEN-LAST:event_jMenuItem4ActionPerformed
     
     /**
